@@ -457,6 +457,73 @@ remove_cron_line() {
     add_log "Removed cronjob lines for $unit from crontab (if existed)"
 }
 
+change_gre_ip() {
+    local unit="$1"
+    local id="${unit#gre}"
+    id="${id%.service}"
+
+    render
+    echo "Change IP for $unit"
+    echo
+    echo "1) Change Local IP (current server IP)"
+    echo "2) Change Remote IP (opposite side)"
+    echo "0) Back"
+    echo
+    local choice
+    read -r -p "Select: " choice
+    choice="$(trim "$choice")"
+
+    case "$choice" in
+        1|2)
+            local which_ip="Local"
+            [[ "$choice" == "2" ]] && which_ip="Remote"
+
+            ask_until_valid "New $which_ip IP :" valid_ipv4 new_ip
+
+            add_log "Changing $which_ip IP to $new_ip for $unit"
+
+            local file="/etc/systemd/system/$unit"
+            if [[ ! -f "$file" ]]; then
+                add_log "Service file not found: $file"
+                pause_enter
+                return 1
+            fi
+
+            # Back up original file
+            cp "$file" "${file}.bak" 2>/dev/null
+
+            # Replace IP in tunnel add line
+            if [[ "$choice" == "1" ]]; then
+                sed -i -E "s|(local )([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})|\1$new_ip|" "$file"
+            else
+                sed -i -E "s|(remote )([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})|\1$new_ip|" "$file"
+            fi
+
+            if [[ $? -ne 0 ]]; then
+                add_log "Failed to edit service file"
+                pause_enter
+                return 1
+            fi
+
+            add_log "Service file updated. Applying changes..."
+            systemd_reload
+            systemctl restart "$unit" >/dev/null 2>&1
+
+            if systemctl is-active --quiet "$unit"; then
+                add_log "SUCCESS: $unit restarted with new IP"
+            else
+                add_log "WARNING: $unit failed to start after IP change - check journalctl -u $unit"
+            fi
+
+            echo
+            show_unit_status_brief "$unit"
+            pause_enter
+            ;;
+        0) return 0 ;;
+        *) add_log "Invalid choice"; pause_enter ;;
+    esac
+}
+
 service_action_menu() {
     local unit="$1"
     local action=""
@@ -469,6 +536,7 @@ service_action_menu() {
         echo "3) Stop & Disable"
         echo "4) Status"
         echo "5) Add Cron Restart (every 10 min)"
+        echo "6) Change IP (Iran or Kharej)"
         echo "0) Back"
         echo
         read -r -e -p "Select action: " action
@@ -498,6 +566,9 @@ service_action_menu() {
             5)
                 add_cron_restart "$unit"
                 pause_enter
+                ;;
+            6)
+                change_gre_ip "$unit"
                 ;;
             0) return 0 ;;
             *) add_log "Invalid action: $action" ;;
